@@ -67,6 +67,14 @@ interface MentionableFile {
   path: string;
 }
 
+interface UploadedFile {
+  name: string;
+  path: string;
+  size: number;
+  mimeType: string;
+  url?: string;
+}
+
 interface CommandExecutionResult {
   type: 'builtin' | 'custom';
   action?: string;
@@ -197,8 +205,12 @@ export function useChatComposerState({
     return '';
   });
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [uploadingImages, setUploadingImages] = useState<Map<string, number>>(new Map());
+  const [uploadingFiles, setUploadingFiles] = useState<Map<string, number>>(new Map());
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
+  const [fileErrors, setFileErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
 
@@ -457,72 +469,226 @@ export function useChatComposerState({
     inputHighlightRef.current.scrollLeft = target.scrollLeft;
   }, []);
 
-  const handleImageFiles = useCallback((files: File[]) => {
-    const validFiles = files.filter((file) => {
+  const ALLOWED_FILE_TYPES = {
+    'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'],
+    'application/pdf': ['.pdf'],
+    'text/*': ['.txt', '.md', '.json', '.xml', '.csv', '.log', '.yml', '.yaml'],
+    'application/msword': ['.doc'],
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+    'application/vnd.ms-excel': ['.xls'],
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+    'application/vnd.ms-powerpoint': ['.ppt'],
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+    'application/zip': ['.zip'],
+    'application/x-tar': ['.tar'],
+    'application/gzip': ['.gz'],
+    'application/json': ['.json'],
+    'application/javascript': ['.js'],
+    'application/typescript': ['.ts'],
+    'text/javascript': ['.js'],
+    'text/typescript': ['.ts'],
+    'text/html': ['.html'],
+    'text/css': ['.css'],
+    'text/python': ['.py'],
+    'text/x-python': ['.py'],
+    'application/x-python-code': ['.py'],
+  };
+
+  const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+  const MAX_FILES = 10;
+
+  const handleFiles = useCallback((files: File[]) => {
+    const validFiles: File[] = [];
+    const errors = new Map<string, string>();
+
+    files.forEach((file) => {
       try {
         if (!file || typeof file !== 'object') {
           console.warn('Invalid file object:', file);
-          return false;
+          return;
         }
 
-        if (!file.type || !file.type.startsWith('image/')) {
-          return false;
-        }
-
-        if (!file.size || file.size > 5 * 1024 * 1024) {
+        // Check file size
+        if (!file.size || file.size > MAX_FILE_SIZE) {
           const fileName = file.name || 'Unknown file';
-          setImageErrors((previous) => {
-            const next = new Map(previous);
-            next.set(fileName, 'File too large (max 5MB)');
-            return next;
-          });
-          return false;
+          errors.set(fileName, `File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`);
+          return;
         }
 
-        return true;
+        // Check if file type is allowed
+        const isAllowed = Object.keys(ALLOWED_FILE_TYPES).some((type) => {
+          if (type.endsWith('/*')) {
+            return file.type.startsWith(type.replace('/*', '/'));
+          }
+          return file.type === type;
+        });
+
+        if (!isAllowed && file.type) {
+          const fileName = file.name || 'Unknown file';
+          errors.set(fileName, `File type not allowed: ${file.type}`);
+          return;
+        }
+
+        validFiles.push(file);
       } catch (error) {
         console.error('Error validating file:', error, file);
-        return false;
       }
     });
 
-    if (validFiles.length > 0) {
-      setAttachedImages((previous) => [...previous, ...validFiles].slice(0, 5));
+    // Update errors
+    if (errors.size > 0) {
+      setFileErrors((previous) => {
+        const next = new Map(previous);
+        errors.forEach((value, key) => next.set(key, value));
+        return next;
+      });
     }
-  }, []);
+
+    // Separate images from other files
+    const imageFiles = validFiles.filter((f) => f.type.startsWith('image/'));
+    const otherFiles = validFiles.filter((f) => !f.type.startsWith('image/'));
+
+    if (imageFiles.length > 0) {
+      setAttachedImages((previous) => [...previous, ...imageFiles].slice(0, MAX_FILES));
+    }
+
+    if (otherFiles.length > 0) {
+      setAttachedFiles((previous) => [...previous, ...otherFiles].slice(0, MAX_FILES));
+    }
+
+    // Start immediate upload for non-image files
+    if (otherFiles.length > 0 && selectedProject) {
+      uploadFilesImmediately(otherFiles);
+    }
+  }, [selectedProject]);
+
+  const uploadFilesImmediately = useCallback(async (files: File[]) => {
+    if (!selectedProject) return;
+
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append('files', file);
+    });
+
+    // Track upload progress
+    const fileNames = files.map(f => f.name);
+    setUploadingFiles((previous) => {
+      const next = new Map(previous);
+      fileNames.forEach(name => next.set(name, 0));
+      return next;
+    });
+
+    // Use XMLHttpRequest for upload progress support
+    const token = localStorage.getItem('auth-token');
+    const xhr = new XMLHttpRequest();
+
+    return new Promise<void>((resolve, reject) => {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          setUploadingFiles((previous) => {
+            const next = new Map(previous);
+            fileNames.forEach(name => next.set(name, percentComplete));
+            return next;
+          });
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+
+            // Update uploaded files state
+            setUploadedFiles((previous) => [
+              ...previous,
+              ...result.files.map((f: any) => ({
+                name: f.name,
+                path: f.path,
+                size: f.size,
+                mimeType: f.mimeType,
+              })),
+            ]);
+
+            // Remove from uploading state
+            setUploadingFiles((previous) => {
+              const next = new Map(previous);
+              fileNames.forEach(name => next.delete(name));
+              return next;
+            });
+
+            // Clear attached files after successful upload
+            setAttachedFiles([]);
+            resolve();
+          } catch (error) {
+            reject(new Error('Failed to parse response'));
+          }
+        } else {
+          reject(new Error(`Upload failed with status ${xhr.status}`));
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        reject(new Error('Network error during upload'));
+      });
+
+      xhr.addEventListener('abort', () => {
+        reject(new Error('Upload aborted'));
+      });
+
+      xhr.open('POST', `/api/projects/${selectedProject.projectId}/files/upload`);
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      }
+      xhr.send(formData);
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('File upload failed:', error);
+
+      // Update error state
+      setFileErrors((previous) => {
+        const next = new Map(previous);
+        fileNames.forEach(name => next.set(name, `Upload failed: ${message}`));
+        return next;
+      });
+
+      // Remove from uploading state
+      setUploadingFiles((previous) => {
+        const next = new Map(previous);
+        fileNames.forEach(name => next.delete(name));
+        return next;
+      });
+    });
+  }, [selectedProject]);
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       const items = Array.from(event.clipboardData.items);
 
+      const pastedFiles: File[] = [];
       items.forEach((item) => {
-        if (!item.type.startsWith('image/')) {
-          return;
-        }
         const file = item.getAsFile();
         if (file) {
-          handleImageFiles([file]);
+          pastedFiles.push(file);
         }
       });
 
-      if (items.length === 0 && event.clipboardData.files.length > 0) {
-        const files = Array.from(event.clipboardData.files);
-        const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-        if (imageFiles.length > 0) {
-          handleImageFiles(imageFiles);
-        }
+      if (pastedFiles.length === 0 && event.clipboardData.files.length > 0) {
+        pastedFiles.push(...Array.from(event.clipboardData.files));
+      }
+
+      if (pastedFiles.length > 0) {
+        handleFiles(pastedFiles);
       }
     },
-    [handleImageFiles],
+    [handleFiles],
   );
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
-    accept: {
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'],
-    },
-    maxSize: 5 * 1024 * 1024,
-    maxFiles: 5,
-    onDrop: handleImageFiles,
+    accept: ALLOWED_FILE_TYPES,
+    maxSize: MAX_FILE_SIZE,
+    maxFiles: MAX_FILES,
+    onDrop: handleFiles,
     noClick: true,
     noKeyboard: true,
   });
@@ -574,6 +740,7 @@ export function useChatComposerState({
 
       const messageContent = currentInput;
 
+      // Upload images if any (images are uploaded at submit time)
       let uploadedImages: unknown[] = [];
       if (attachedImages.length > 0) {
         const formData = new FormData();
@@ -581,22 +748,78 @@ export function useChatComposerState({
           formData.append('images', file);
         });
 
+        // Track image upload progress
+        const imageNames = attachedImages.map(f => f.name);
+        setUploadingImages((previous) => {
+          const next = new Map(previous);
+          imageNames.forEach(name => next.set(name, 0));
+          return next;
+        });
+
         try {
-          const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
-            method: 'POST',
-            headers: {},
-            body: formData,
+          const token = localStorage.getItem('auth-token');
+          const result = await new Promise<any>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.addEventListener('progress', (event) => {
+              if (event.lengthComputable) {
+                const percentComplete = Math.round((event.loaded / event.total) * 100);
+                setUploadingImages((previous) => {
+                  const next = new Map(previous);
+                  imageNames.forEach(name => next.set(name, percentComplete));
+                  return next;
+                });
+              }
+            });
+
+            xhr.addEventListener('load', () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                  resolve(JSON.parse(xhr.responseText));
+                } catch {
+                  reject(new Error('Failed to parse response'));
+                }
+              } else {
+                reject(new Error(`Upload failed with status ${xhr.status}`));
+              }
+            });
+
+            xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+            xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+
+            xhr.open('POST', `/api/projects/${selectedProject.projectId}/upload-images`);
+            if (token) {
+              xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            }
+            xhr.send(formData);
           });
 
-          if (!response.ok) {
-            throw new Error('Failed to upload images');
-          }
-
-          const result = await response.json();
           uploadedImages = result.images;
+
+          // Clear uploading state on success
+          setUploadingImages((previous) => {
+            const next = new Map(previous);
+            imageNames.forEach(name => next.delete(name));
+            return next;
+          });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
           console.error('Image upload failed:', error);
+
+          // Update error state
+          setImageErrors((previous) => {
+            const next = new Map(previous);
+            imageNames.forEach(name => next.set(name, `Upload failed: ${message}`));
+            return next;
+          });
+
+          // Clear uploading state
+          setUploadingImages((previous) => {
+            const next = new Map(previous);
+            imageNames.forEach(name => next.delete(name));
+            return next;
+          });
+
           addMessage({
             type: 'error',
             content: `Failed to upload images: ${message}`,
@@ -605,6 +828,9 @@ export function useChatComposerState({
           return;
         }
       }
+
+      // Use already uploaded files
+      const allUploadedFiles = [...uploadedFiles];
 
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
@@ -729,6 +955,7 @@ export function useChatComposerState({
           skipPermissions: toolsSettings?.skipPermissions || false,
           sessionSummary,
           images: uploadedImages,
+          files: allUploadedFiles,
         },
       });
 
@@ -736,8 +963,12 @@ export function useChatComposerState({
       inputValueRef.current = '';
       resetCommandMenuState();
       setAttachedImages([]);
+      setAttachedFiles([]);
+      setUploadedFiles([]);
       setUploadingImages(new Map());
+      setUploadingFiles(new Map());
       setImageErrors(new Map());
+      setFileErrors(new Map());
       setIsTextareaExpanded(false);
 
       if (textareaRef.current) {
@@ -749,6 +980,8 @@ export function useChatComposerState({
     [
       selectedSession,
       attachedImages,
+      attachedFiles,
+      uploadedFiles,
       claudeModel,
       codexModel,
       currentSessionId,
@@ -1006,12 +1239,18 @@ export function useChatComposerState({
     selectFile,
     attachedImages,
     setAttachedImages,
+    attachedFiles,
+    setAttachedFiles,
+    uploadedFiles,
+    setUploadedFiles,
     uploadingImages,
+    uploadingFiles,
     imageErrors,
+    fileErrors,
     getRootProps,
     getInputProps,
     isDragActive,
-    openImagePicker: open,
+    openFilePicker: open,
     handleSubmit,
     handleInputChange,
     handleKeyDown,

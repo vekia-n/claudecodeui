@@ -166,12 +166,18 @@ function ChatInterface({
     selectFile,
     attachedImages,
     setAttachedImages,
+    attachedFiles,
+    setAttachedFiles,
+    uploadedFiles,
+    setUploadedFiles,
     uploadingImages,
+    uploadingFiles,
     imageErrors,
+    fileErrors,
     getRootProps,
     getInputProps,
     isDragActive,
-    openImagePicker,
+    openFilePicker,
     handleSubmit,
     handleInputChange,
     handleKeyDown,
@@ -386,8 +392,17 @@ function ChatInterface({
               previous.filter((_, currentIndex) => currentIndex !== index),
             )
           }
+          attachedFiles={attachedFiles}
+          onRemoveFile={(index) =>
+            setAttachedFiles((previous) =>
+              previous.filter((_, currentIndex) => currentIndex !== index),
+            )
+          }
+          uploadedFiles={uploadedFiles}
           uploadingImages={uploadingImages}
+          uploadingFiles={uploadingFiles}
           imageErrors={imageErrors}
+          fileErrors={fileErrors}
           showFileDropdown={showFileDropdown}
           filteredFiles={filteredFiles}
           selectedFileIndex={selectedFileIndex}
@@ -400,7 +415,7 @@ function ChatInterface({
           frequentCommands={commandQuery ? [] : frequentCommands}
           getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
           getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
-          openImagePicker={openImagePicker}
+          openFilePicker={openFilePicker}
           inputHighlightRef={inputHighlightRef}
           renderInputWithMentions={renderInputWithMentions}
           textareaRef={textareaRef}
