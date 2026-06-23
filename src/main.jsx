@@ -4,6 +4,17 @@ import App from './App.tsx'
 import './index.css'
 import 'katex/dist/katex.min.css'
 
+// 设置默认主题为亮色模式
+if (typeof window !== 'undefined') {
+  const savedTheme = localStorage.getItem('theme');
+  if (!savedTheme) {
+    localStorage.setItem('theme', 'light');
+    document.documentElement.classList.remove('dark');
+  } else if (savedTheme === 'dark') {
+    document.documentElement.classList.add('dark');
+  }
+}
+
 // Initialize i18n
 import './i18n/config.js'
 
