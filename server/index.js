@@ -903,15 +903,21 @@ const uploadFilesHandler = async (req, res) => {
 
     const uploadMiddleware = multer({
         storage: multer.diskStorage({
-            destination: (req, file, cb) => {
-                cb(null, os.tmpdir());
+            destination: async (req, file, cb) => {
+                try {
+                    const { projectId } = req.params;
+                    const uploadDir = path.join(os.homedir(), 'upload', projectId);
+                    await fsPromises.mkdir(uploadDir, { recursive: true });
+                    cb(null, uploadDir);
+                } catch (error) {
+                    cb(error);
+                }
             },
             filename: (req, file, cb) => {
-                // Use a unique temp name, but preserve original name in file.originalname
-                // Note: file.originalname may contain path separators for folder uploads
-                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-                // For temp file, just use a safe unique name without the path
-                cb(null, `upload-${uniqueSuffix}`);
+                // Preserve original filename with timestamp prefix to avoid conflicts
+                const timestamp = Date.now();
+                const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+                cb(null, `${timestamp}-${safeName}`);
             }
         }),
         limits: {
@@ -1028,12 +1034,26 @@ const uploadFilesHandler = async (req, res) => {
                 }
 
                 // Move file (copy + unlink to handle cross-device scenarios)
-                await fsPromises.copyFile(file.path, destPath);
-                await fsPromises.unlink(file.path);
+                try {
+                    await fsPromises.copyFile(file.path, destPath);
+                    await fsPromises.unlink(file.path);
+
+                    // Verify file was copied successfully
+                    const stats = await fsPromises.stat(destPath);
+                    if (stats.size === 0 && file.size > 0) {
+                        throw new Error('File copied but size is 0');
+                    }
+                } catch (copyError) {
+                    console.error('Error copying file:', copyError);
+                    // Clean up failed file
+                    await fsPromises.unlink(destPath).catch(() => {});
+                    throw copyError;
+                }
 
                 uploadedFiles.push({
                     name: fileName,
-                    path: destPath,
+                    path: path.join('upload', projectId, path.basename(destPath)),
+                    fullPath: destPath,
                     size: file.size,
                     mimeType: file.mimetype
                 });
