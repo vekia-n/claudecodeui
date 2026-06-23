@@ -1,16 +1,26 @@
 import { FileIcon, XIcon, CheckCircleIcon, AlertCircleIcon, Loader2Icon } from 'lucide-react';
 
 interface FileAttachmentProps {
-  file: File;
+  file?: File;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
   onRemove: () => void;
   uploadProgress?: number;
   error?: string;
   uploaded?: boolean;
+  size?: number;
 }
 
-const FileAttachment = ({ file, onRemove, uploadProgress, error, uploaded }: FileAttachmentProps) => {
+const FileAttachment = ({ file, fileName, fileSize: fileSizeProp, mimeType, onRemove, uploadProgress, error, uploaded, size }: FileAttachmentProps) => {
+  // Resolve display name: prefer explicit fileName prop, then File.name
+  const displayName = fileName ?? file?.name ?? 'Unknown file';
+
+  // Resolve display size: prefer size prop (legacy), then fileSize prop, then File.size
+  const displaySize = size !== undefined ? size : (fileSizeProp !== undefined ? fileSizeProp : (file?.size ?? 0));
+
   const getFileIcon = () => {
-    const ext = file.name.split('.').pop()?.toLowerCase();
+    const ext = displayName.split('.').pop()?.toLowerCase();
     switch (ext) {
       case 'pdf':
         return '📄';
@@ -50,8 +60,8 @@ const FileAttachment = ({ file, onRemove, uploadProgress, error, uploaded }: Fil
       <span className="text-lg">{getFileIcon()}</span>
 
       <div className="flex-1 min-w-0">
-        <div className="truncate text-sm font-medium text-foreground">{file.name}</div>
-        <div className="text-xs text-muted-foreground">{formatFileSize(file.size)}</div>
+        <div className="truncate text-sm font-medium text-foreground">{displayName}</div>
+        <div className="text-xs text-muted-foreground">{formatFileSize(displaySize)}</div>
       </div>
 
       {/* Upload status indicators */}
@@ -78,7 +88,7 @@ const FileAttachment = ({ file, onRemove, uploadProgress, error, uploaded }: Fil
         type="button"
         onClick={onRemove}
         className="rounded-full p-1 text-muted-foreground opacity-100 transition-opacity hover:bg-destructive/10 hover:text-destructive focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-        aria-label={`Remove ${file.name}`}
+        aria-label={`Remove ${displayName}`}
       >
         <XIcon className="h-3 w-3" />
       </button>

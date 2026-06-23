@@ -305,7 +305,9 @@ export default function ChatComposer({
                   {uploadedFiles.map((file, index) => (
                     <FileAttachment
                       key={`uploaded-${index}`}
-                      file={new File([], file.name, { type: file.mimeType })}
+                      fileName={file.name}
+                      fileSize={file.size}
+                      mimeType={file.mimeType}
                       onRemove={() => {}}
                       uploaded={true}
                     />

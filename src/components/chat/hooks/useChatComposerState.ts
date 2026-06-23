@@ -497,71 +497,6 @@ export function useChatComposerState({
   const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
   const MAX_FILES = 10;
 
-  const handleFiles = useCallback((files: File[]) => {
-    const validFiles: File[] = [];
-    const errors = new Map<string, string>();
-
-    files.forEach((file) => {
-      try {
-        if (!file || typeof file !== 'object') {
-          console.warn('Invalid file object:', file);
-          return;
-        }
-
-        // Check file size
-        if (!file.size || file.size > MAX_FILE_SIZE) {
-          const fileName = file.name || 'Unknown file';
-          errors.set(fileName, `File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`);
-          return;
-        }
-
-        // Check if file type is allowed
-        const isAllowed = Object.keys(ALLOWED_FILE_TYPES).some((type) => {
-          if (type.endsWith('/*')) {
-            return file.type.startsWith(type.replace('/*', '/'));
-          }
-          return file.type === type;
-        });
-
-        if (!isAllowed && file.type) {
-          const fileName = file.name || 'Unknown file';
-          errors.set(fileName, `File type not allowed: ${file.type}`);
-          return;
-        }
-
-        validFiles.push(file);
-      } catch (error) {
-        console.error('Error validating file:', error, file);
-      }
-    });
-
-    // Update errors
-    if (errors.size > 0) {
-      setFileErrors((previous) => {
-        const next = new Map(previous);
-        errors.forEach((value, key) => next.set(key, value));
-        return next;
-      });
-    }
-
-    // Separate images from other files
-    const imageFiles = validFiles.filter((f) => f.type.startsWith('image/'));
-    const otherFiles = validFiles.filter((f) => !f.type.startsWith('image/'));
-
-    if (imageFiles.length > 0) {
-      setAttachedImages((previous) => [...previous, ...imageFiles].slice(0, MAX_FILES));
-    }
-
-    if (otherFiles.length > 0) {
-      setAttachedFiles((previous) => [...previous, ...otherFiles].slice(0, MAX_FILES));
-    }
-
-    // Start immediate upload for non-image files
-    if (otherFiles.length > 0 && selectedProject) {
-      uploadFilesImmediately(otherFiles);
-    }
-  }, [selectedProject]);
-
   const uploadFilesImmediately = useCallback(async (files: File[]) => {
     if (!selectedProject) return;
 
@@ -617,8 +552,10 @@ export function useChatComposerState({
               return next;
             });
 
-            // Clear attached files after successful upload
-            setAttachedFiles([]);
+            // Remove only the files that were just uploaded (match by name)
+            setAttachedFiles((previous) =>
+              previous.filter((f) => !fileNames.includes(f.name))
+            );
             resolve();
           } catch (error) {
             reject(new Error('Failed to parse response'));
@@ -660,6 +597,72 @@ export function useChatComposerState({
       });
     });
   }, [selectedProject]);
+
+  const handleFiles = useCallback((files: File[]) => {
+    const validFiles: File[] = [];
+    const errors = new Map<string, string>();
+
+    files.forEach((file) => {
+      try {
+        if (!file || typeof file !== 'object') {
+          console.warn('Invalid file object:', file);
+          return;
+        }
+
+        // Check file size (reject empty files and files over limit)
+        if (file.size === 0 || file.size > MAX_FILE_SIZE) {
+          const name = file.name || 'Unknown file';
+          if (file.size === 0) {
+            errors.set(name, 'File is empty (0 bytes)');
+          } else {
+            errors.set(name, `File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`);
+          }
+          return;
+        }
+
+        // Check if file type is allowed
+        const isAllowed = Object.keys(ALLOWED_FILE_TYPES).some((type) => {
+          if (type.endsWith('/*')) {
+            return file.type.startsWith(type.replace('/*', '/'));
+          }
+          return file.type === type;
+        });
+
+        if (!isAllowed && file.type) {
+          const name = file.name || 'Unknown file';
+          errors.set(name, `File type not allowed: ${file.type}`);
+          return;
+        }
+
+        validFiles.push(file);
+      } catch (error) {
+        console.error('Error validating file:', error, file);
+      }
+    });
+
+    // Update errors
+    if (errors.size > 0) {
+      setFileErrors((previous) => {
+        const next = new Map(previous);
+        errors.forEach((value, key) => next.set(key, value));
+        return next;
+      });
+    }
+
+    // Separate images from other files
+    const imageFiles = validFiles.filter((f) => f.type.startsWith('image/'));
+    const otherFiles = validFiles.filter((f) => !f.type.startsWith('image/'));
+
+    if (imageFiles.length > 0) {
+      setAttachedImages((previous) => [...previous, ...imageFiles].slice(0, MAX_FILES));
+    }
+
+    if (otherFiles.length > 0) {
+      setAttachedFiles((previous) => [...previous, ...otherFiles].slice(0, MAX_FILES));
+      // Start immediate upload for non-image files
+      uploadFilesImmediately(otherFiles);
+    }
+  }, [selectedProject, uploadFilesImmediately]);
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {

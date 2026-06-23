@@ -11,6 +11,7 @@ import express from 'express';
 import cors from 'cors';
 import mime from 'mime-types';
 import Database from 'better-sqlite3';
+import multer from 'multer';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
 import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
@@ -92,6 +93,51 @@ const RUNNING_VERSION = (() => {
 const MAX_FILE_UPLOAD_SIZE_MB = 200;
 const MAX_FILE_UPLOAD_SIZE_BYTES = MAX_FILE_UPLOAD_SIZE_MB * 1024 * 1024;
 const MAX_FILE_UPLOAD_COUNT = 20;
+
+// Fix UTF-8 filenames garbled by busboy (which treats them as Latin-1 when
+// defParamCharset is not set). Convert Latin-1 encoded bytes back to UTF-8.
+function fixOriginalName(originalname) {
+    if (!originalname) return originalname;
+    try {
+        const buf = Buffer.from(originalname, 'latin1');
+        const decoded = buf.toString('utf8');
+        // Verify the decoding produced valid UTF-8 (no replacement characters)
+        if (!decoded.includes('�')) {
+            return decoded;
+        }
+    } catch {}
+    return originalname;
+}
+
+// Create multer instance once for file uploads.
+// Files are written directly to the project directory.
+const uploadMulter = multer({
+    storage: multer.diskStorage({
+        destination: async (req, file, cb) => {
+            try {
+                const { projectId } = req.params;
+                const projectRoot = await projectsDb.getProjectPathById(projectId);
+                if (!projectRoot) {
+                    return cb(new Error('Project not found'));
+                }
+                await fsPromises.mkdir(projectRoot, { recursive: true });
+                cb(null, projectRoot);
+            } catch (error) {
+                cb(error);
+            }
+        },
+        filename: (req, file, cb) => {
+            // Prefix with timestamp to avoid conflicts; preserve Unicode characters.
+            const timestamp = Date.now();
+            const safeName = fixOriginalName(file.originalname).replace(/[/\x00]/g, '_');
+            cb(null, `${timestamp}-${safeName}`);
+        }
+    }),
+    limits: {
+        fileSize: MAX_FILE_UPLOAD_SIZE_BYTES,
+        files: MAX_FILE_UPLOAD_COUNT
+    }
+});
 
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
@@ -896,38 +942,9 @@ app.delete('/api/projects/:projectId/files', authenticateToken, async (req, res)
 });
 
 // POST /api/projects/:projectId/files/upload - Upload files
-// Dynamic import of multer for file uploads
-const uploadFilesHandler = async (req, res) => {
-    // Dynamic import of multer
-    const multer = (await import('multer')).default;
-
-    const uploadMiddleware = multer({
-        storage: multer.diskStorage({
-            destination: async (req, file, cb) => {
-                try {
-                    const { projectId } = req.params;
-                    const uploadDir = path.join(os.homedir(), 'upload', projectId);
-                    await fsPromises.mkdir(uploadDir, { recursive: true });
-                    cb(null, uploadDir);
-                } catch (error) {
-                    cb(error);
-                }
-            },
-            filename: (req, file, cb) => {
-                // Preserve original filename with timestamp prefix to avoid conflicts
-                const timestamp = Date.now();
-                const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-                cb(null, `${timestamp}-${safeName}`);
-            }
-        }),
-        limits: {
-            fileSize: MAX_FILE_UPLOAD_SIZE_BYTES,
-            files: MAX_FILE_UPLOAD_COUNT
-        }
-    });
-
-    // Use multer middleware
-    uploadMiddleware.array('files', MAX_FILE_UPLOAD_COUNT)(req, res, async (err) => {
+// Uses the pre-created `uploadMulter` instance (defined near the top of this file).
+const uploadFilesHandler = (req, res) => {
+    uploadMulter.array('files', MAX_FILE_UPLOAD_COUNT)(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
             if (err.code === 'LIMIT_FILE_SIZE') {
@@ -941,119 +958,27 @@ const uploadFilesHandler = async (req, res) => {
 
         try {
             const { projectId } = req.params;
-            const { targetPath, relativePaths, requestedFileCount: requestedFileCountRaw } = req.body;
-
-            // Parse relative paths if provided (for folder uploads)
-            let filePaths = [];
-            if (relativePaths) {
-                try {
-                    filePaths = JSON.parse(relativePaths);
-                } catch (e) {
-                    console.log('[DEBUG] Failed to parse relativePaths:', relativePaths);
-                }
-            }
 
             console.log('[DEBUG] File upload request:', {
                 projectId,
-                targetPath: JSON.stringify(targetPath),
-                targetPathType: typeof targetPath,
                 filesCount: req.files?.length,
-                relativePaths: filePaths
             });
 
             if (!req.files || req.files.length === 0) {
                 return res.status(400).json({ error: 'No files provided' });
             }
 
-            const parsedRequestedFileCount = Number.parseInt(requestedFileCountRaw, 10);
-            const requestedFileCount = Number.isFinite(parsedRequestedFileCount) && parsedRequestedFileCount > 0
-                ? parsedRequestedFileCount
-                : req.files.length;
-
-            // Resolve the project directory through the DB using the new projectId.
-            const projectRoot = await projectsDb.getProjectPathById(projectId);
-            if (!projectRoot) {
-                return res.status(404).json({ error: 'Project not found' });
-            }
-
-            console.log('[DEBUG] Project root:', projectRoot);
-
-            // Validate and resolve target path
-            // If targetPath is empty or '.', use project root directly
-            const targetDir = targetPath || '';
-            let resolvedTargetDir;
-
-            console.log('[DEBUG] Target dir:', JSON.stringify(targetDir));
-
-            if (!targetDir || targetDir === '.' || targetDir === './') {
-                // Empty path means upload to project root
-                resolvedTargetDir = path.resolve(projectRoot);
-                console.log('[DEBUG] Using project root as target:', resolvedTargetDir);
-            } else {
-                const validation = validatePathInProject(projectRoot, targetDir);
-                if (!validation.valid) {
-                    console.log('[DEBUG] Path validation failed:', validation.error);
-                    return res.status(403).json({ error: validation.error });
-                }
-                resolvedTargetDir = validation.resolved;
-                console.log('[DEBUG] Resolved target dir:', resolvedTargetDir);
-            }
-
-            // Ensure target directory exists
-            try {
-                await fsPromises.access(resolvedTargetDir);
-            } catch {
-                await fsPromises.mkdir(resolvedTargetDir, { recursive: true });
-            }
-
-            // Move uploaded files from temp to target directory
+            // Files are already written directly to project directory by multer.
+            // Just collect the results.
             const uploadedFiles = [];
-            console.log('[DEBUG] Processing files:', req.files.map(f => ({ originalname: f.originalname, path: f.path })));
-            for (let i = 0; i < req.files.length; i++) {
-                const file = req.files[i];
-                // Use relative path if provided (for folder uploads), otherwise use originalname
-                const fileName = (filePaths && filePaths[i]) ? filePaths[i] : file.originalname;
-                console.log('[DEBUG] Processing file:', fileName, '(originalname:', file.originalname + ')');
-                const destPath = path.join(resolvedTargetDir, fileName);
-
-                // Validate destination path
-                const destValidation = validatePathInProject(projectRoot, destPath);
-                if (!destValidation.valid) {
-                    console.log('[DEBUG] Destination validation failed for:', destPath);
-                    // Clean up temp file
-                    await fsPromises.unlink(file.path).catch(() => {});
-                    continue;
-                }
-
-                // Ensure parent directory exists (for nested files from folder upload)
-                const parentDir = path.dirname(destPath);
-                try {
-                    await fsPromises.access(parentDir);
-                } catch {
-                    await fsPromises.mkdir(parentDir, { recursive: true });
-                }
-
-                // Move file (copy + unlink to handle cross-device scenarios)
-                try {
-                    await fsPromises.copyFile(file.path, destPath);
-                    await fsPromises.unlink(file.path);
-
-                    // Verify file was copied successfully
-                    const stats = await fsPromises.stat(destPath);
-                    if (stats.size === 0 && file.size > 0) {
-                        throw new Error('File copied but size is 0');
-                    }
-                } catch (copyError) {
-                    console.error('Error copying file:', copyError);
-                    // Clean up failed file
-                    await fsPromises.unlink(destPath).catch(() => {});
-                    throw copyError;
-                }
+            console.log('[DEBUG] Processing files:', req.files.map(f => ({ originalname: f.originalname, path: f.path, size: f.size })));
+            for (const file of req.files) {
+                const fileName = path.basename(file.path);
+                console.log('[DEBUG] Uploaded file:', fileName, '(originalname:', file.originalname + ', size:', file.size + ')');
 
                 uploadedFiles.push({
                     name: fileName,
-                    path: path.join('upload', projectId, path.basename(destPath)),
-                    fullPath: destPath,
+                    path: file.path,
                     size: file.size,
                     mimeType: file.mimetype
                 });
@@ -1063,18 +988,10 @@ const uploadFilesHandler = async (req, res) => {
                 success: true,
                 files: uploadedFiles,
                 uploadedCount: uploadedFiles.length,
-                requestedFileCount,
-                targetPath: resolvedTargetDir,
                 message: `Uploaded ${uploadedFiles.length} ${uploadedFiles.length === 1 ? 'file' : 'files'} successfully`
             });
         } catch (error) {
             console.error('Error uploading files:', error);
-            // Clean up any remaining temp files
-            if (req.files) {
-                for (const file of req.files) {
-                    await fsPromises.unlink(file.path).catch(() => {});
-                }
-            }
             if (error.code === 'EACCES') {
                 res.status(403).json({ error: 'Permission denied' });
             } else {
@@ -1105,7 +1022,7 @@ app.post('/api/projects/:projectId/upload-images', authenticateToken, async (req
             },
             filename: (req, file, cb) => {
                 const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-                const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+                const sanitizedName = fixOriginalName(file.originalname).replace(/[/\x00]/g, '_');
                 cb(null, uniqueSuffix + '-' + sanitizedName);
             }
         });
@@ -1151,7 +1068,7 @@ app.post('/api/projects/:projectId/upload-images', authenticateToken, async (req
                         await fs.unlink(file.path);
 
                         return {
-                            name: file.originalname,
+                            name: fixOriginalName(file.originalname),
                             data: `data:${mimeType};base64,${base64}`,
                             size: file.size,
                             mimeType: mimeType
