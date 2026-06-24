@@ -29,7 +29,7 @@ export default function GitHubStarBadge() {
         <Star className="h-3 w-3" />
         <span className="font-medium">Star</span>
         {formattedCount && (
-          <span className="border-l border-border/50 pl-1.5 tabular-nums">{formattedCount}</span>
+          <span className="tabular-nums">{formattedCount}</span>
         )}
       </a>
       <button

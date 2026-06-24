@@ -25,10 +25,6 @@ import {
 
 const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "claude", name: "Anthropic" },
-  { id: "codex", name: "OpenAI" },
-  { id: "gemini", name: "Google" },
-  { id: "cursor", name: "Cursor" },
-  { id: "opencode", name: "OpenCode" },
 ];
 
 const MOD_KEY =
@@ -122,11 +118,15 @@ export default function ProviderSelectionEmptyState({
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const visibleProviderGroups = useMemo<ProviderGroup[]>(() => {
-    return PROVIDER_META.map((p) => ({
-      id: p.id,
-      name: p.name,
-      models: providerModelCatalog[p.id]?.OPTIONS ?? [],
-    }));
+    // 只显示claude provider的模型
+    const claudeProvider = PROVIDER_META.find(p => p.id === "claude");
+    if (!claudeProvider) return [];
+
+    return [{
+      id: claudeProvider.id,
+      name: claudeProvider.name,
+      models: providerModelCatalog[claudeProvider.id]?.OPTIONS ?? [],
+    }];
   }, [providerModelCatalog]);
 
   const nextTaskPrompt = t("tasks.nextTaskPrompt", {

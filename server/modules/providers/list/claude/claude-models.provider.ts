@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
@@ -13,6 +15,71 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
+// 从 ~/.claude/settings.json 读取真实模型配置
+const getClaudeSettingsFromDisk = async (): Promise<Record<string, string> | null> => {
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    const content = await readFile(settingsPath, 'utf8');
+    const parsed = JSON.parse(content);
+    return parsed.env || null;
+  } catch {
+    return null;
+  }
+};
+
+// 根据环境变量构建模型列表
+const buildModelsFromEnv = (env: Record<string, string>): ProviderModelsDefinition => {
+  const options = [];
+
+  // 默认模型
+  const defaultModel = env.ANTHROPIC_MODEL || 'default';
+  const defaultModelName = env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME || defaultModel;
+  options.push({
+    value: 'default',
+    label: `Default (${defaultModelName})`,
+    description: `Use the default model: ${defaultModelName}`,
+  });
+
+  // Sonnet 模型
+  const sonnetModel = env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  const sonnetModelName = env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME;
+  if (sonnetModel) {
+    options.push({
+      value: 'sonnet',
+      label: sonnetModelName || sonnetModel,
+      description: `Sonnet model: ${sonnetModelName || sonnetModel}`,
+    });
+  }
+
+  // Opus 模型
+  const opusModel = env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+  const opusModelName = env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME;
+  if (opusModel) {
+    options.push({
+      value: 'opus',
+      label: opusModelName || opusModel,
+      description: `Opus model: ${opusModelName || opusModel}`,
+    });
+  }
+
+  // Haiku 模型
+  const haikuModel = env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  const haikuModelName = env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME;
+  if (haikuModel) {
+    options.push({
+      value: 'haiku',
+      label: haikuModelName || haikuModel,
+      description: `Haiku model: ${haikuModelName || haikuModel}`,
+    });
+  }
+
+  return {
+    OPTIONS: options,
+    DEFAULT: 'default',
+  };
+};
+
+// 默认的 fallback 模型列表（当无法读取配置时使用）
 export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
@@ -159,17 +226,16 @@ const readClaudeSessionModelFromJsonl = async (
 
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    // claude creates a new jsonl file as a separate session for this request.
-    // As a result, it lists the workspace where this is invoked when it shouldn't.
-    //
-    // Disabled for now:
-    // const queryInstance = query({
-    //   prompt: 'Get supported models',
-    //   options: buildClaudeQueryOptions(),
-    // });
-    // const supportedModels = await queryInstance.supportedModels();
-    // queryInstance.close();
-    // return buildClaudeModelsDefinition(supportedModels);
+    // 优先从 ~/.claude/settings.json 读取真实模型配置
+    const env = await getClaudeSettingsFromDisk();
+    if (env) {
+      const models = buildModelsFromEnv(env);
+      if (models.OPTIONS.length > 0) {
+        return models;
+      }
+    }
+
+    // 如果无法读取配置，使用默认的 fallback 模型列表
     return CLAUDE_FALLBACK_MODELS;
   }
 

@@ -16,8 +16,19 @@ type ProjectCreationWizardProps = {
   onProjectCreated?: (project?: Record<string, unknown>) => void;
 };
 
+// 根据端口判断环境，选择不同的项目目录
+const getProjectDirectory = (): string => {
+  const port = window.location.port;
+  // 预发布环境使用 ~/claude_project_preview
+  if (port === '3002') {
+    return '~/claude_project_preview';
+  }
+  // 正式环境使用 ~/claudeui_project
+  return '~/claudeui_project';
+};
+
 const initialFormState: WizardFormState = {
-  workspacePath: '',
+  workspacePath: getProjectDirectory(),
   githubUrl: '',
   tokenMode: 'stored',
   selectedGithubToken: '',

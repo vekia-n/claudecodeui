@@ -1653,6 +1653,15 @@ async function startServer() {
             console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
 
+            // 自动创建默认项目目录
+            const defaultProjectDir = path.join(os.homedir(), 'claudeui_project');
+            try {
+                await fsPromises.mkdir(defaultProjectDir, { recursive: true });
+                console.log(`${c.info('[INFO]')} Default project directory: ${c.bright(defaultProjectDir)}`);
+            } catch (err) {
+                console.warn(`${c.warn('[WARN]')} Failed to create default project directory:`, err.message);
+            }
+
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
 
