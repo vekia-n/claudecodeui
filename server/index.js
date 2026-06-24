@@ -1653,13 +1653,20 @@ async function startServer() {
             console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
             console.log('');
 
-            // 自动创建默认项目目录
+            // 自动创建默认项目目录并注册为项目
             const defaultProjectDir = path.join(os.homedir(), 'claudeui_project');
             try {
                 await fsPromises.mkdir(defaultProjectDir, { recursive: true });
                 console.log(`${c.info('[INFO]')} Default project directory: ${c.bright(defaultProjectDir)}`);
+
+                // 检查项目是否已注册，如果没有则自动注册
+                const existingProject = projectsDb.getProjectPath(defaultProjectDir);
+                if (!existingProject) {
+                    projectsDb.createProjectPath(defaultProjectDir, 'claudeui_project');
+                    console.log(`${c.info('[INFO]')} Auto-registered default project: ${c.bright(defaultProjectDir)}`);
+                }
             } catch (err) {
-                console.warn(`${c.warn('[WARN]')} Failed to create default project directory:`, err.message);
+                console.warn(`${c.warn('[WARN]')} Failed to create/register default project directory:`, err.message);
             }
 
             // Start watching the projects folder for changes
