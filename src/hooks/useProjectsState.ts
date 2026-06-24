@@ -410,21 +410,23 @@ export function useProjectsState({
       if (showLoadingState) {
         setIsLoadingProjects(true);
       }
-      const response = await api.projects();
-      const projectData = (await response.json()) as Project[];
 
-      setProjects((prevProjects) => {
-        const projectsWithTaskMaster = mergeTaskMasterCache(projectData, prevProjects);
-        const mergedProjects = mergeExpandedSessionPages(prevProjects, projectsWithTaskMaster);
+      // 根据端口判断环境，返回固定的项目
+      const port = window.location.port;
+      const projectPath = port === '3002' ? '~/claude_project_preview' : '~/claudeui_project';
+      const projectName = port === '3002' ? 'claude_project_preview' : 'claudeui_project';
 
-        if (prevProjects.length === 0) {
-          return mergedProjects;
-        }
+      const fixedProject: Project = {
+        projectId: 'default',
+        displayName: projectName,
+        fullPath: projectPath,
+        path: projectPath,
+        isStarred: false,
+        sessions: [],
+        sessionMeta: { total: 0, hasMore: false },
+      };
 
-        return projectsHaveChanges(prevProjects, mergedProjects)
-          ? mergedProjects
-          : prevProjects;
-      });
+      setProjects([fixedProject]);
     } catch (error) {
       console.error('Error fetching projects:', error);
     } finally {
